@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="64" viewBox="0 0 900 64" role="img" aria-label="Status line preview">
+  <rect width="900" height="64" rx="8" fill="#1e1e2e"/>
+  <text x="16" y="38" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="14" xml:space="preserve">
+    <tspan fill="#89dceb" font-weight="bold">Sonnet 5.5</tspan><tspan fill="#6c7086"> | </tspan><tspan fill="#9399b2">claude-usage-meter</tspan><tspan fill="#6c7086"> | </tspan><tspan fill="#9399b2">ctx </tspan><tspan fill="#a6e3a1">███░░░░░ 34%</tspan><tspan fill="#6c7086"> | </tspan><tspan fill="#9399b2">session </tspan><tspan fill="#a6e3a1">██░░░░░░ 24%</tspan><tspan fill="#9399b2"> (2h14m)</tspan><tspan fill="#6c7086"> | </tspan><tspan fill="#9399b2">week </tspan><tspan fill="#f9e2af">██████░░ 78%</tspan><tspan fill="#9399b2"> (3d4h)</tspan><tspan fill="#6c7086"> | </tspan><tspan fill="#9399b2">$1.23</tspan>
+  </text>
+</svg>
