@@ -60,4 +60,10 @@ week=$(j .rate_limits.seven_day.used_percentage)
 cost=$(j .cost.total_cost_usd)
 [ -n "$cost" ] && out+="${SEP}${DIM}\$$(printf '%.2f' "$cost")${R}"
 
+# Clickable "repo" label linking to the project (OSC 8 hyperlink); set USAGE_METER_NO_LINK=1 to hide.
+if [ -z "$USAGE_METER_NO_LINK" ]; then
+  url="https://github.com/whbrewer/claude-usage-meter"
+  out+="${SEP}"$'\e]8;;'"$url"$'\e\\'"${DIM}repo${R}"$'\e]8;;\e\\'
+fi
+
 printf '%s\n' "$out"
