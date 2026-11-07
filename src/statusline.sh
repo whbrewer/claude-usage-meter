@@ -58,18 +58,19 @@ meter() {  # label percent resets_at [pace]
 
 recommend() {  # session_used week_used session_pace week_pace session_resets_at -> "level text"
   awk -v su="$1" -v wu="$2" -v sp="$3" -v wp="$4" -v sr="$5" -v n="$(date +%s)" 'BEGIN {
-    if (wp != "" && wp >= 1.05) { printf "red ease off (→%d%%)", wp * 100; exit }
+    if (wp != "" && wp >= 1.05) { printf "red ease off →%d%%", wp * 100; exit }
     if (sp != "" && sp > 1.0 && su > 0) {
       left = sr - n; used_s = 18000 - left
       eta = used_s * (100 - su) / su
-      if (eta < left && eta < 3600) { printf "yellow session cap in %dm", eta / 60 + 1; exit }
+      if (eta < left && eta < 3600) { printf "yellow cap in %dm", eta / 60 + 1; exit }
     }
-    if (wp != "" && wp < 0.7) { printf "green room to burn (→%d%%)", wp * 100; exit }
+    if (wp != "" && wp < 0.7) { printf "green burn more →%d%%", wp * 100; exit }
     if (wp != "") { printf "dim on pace"; exit }
   }'
 }
 
-out="${BOLD}${CYAN}$(j .model.display_name)${R}"
+head="${BOLD}${CYAN}$(j .model.display_name)${R}"
+out=""; rec=""
 
 ctx=$(j .context_window.used_percentage)
 [ -n "$ctx" ] && out+="${SEP}$(meter ctx "$ctx")"
@@ -84,11 +85,12 @@ week_r=$(j .rate_limits.seven_day.resets_at)
 week_p=""; [ -n "$week" ] && [ -n "$week_r" ] && week_p=$(pace "$week" "$week_r" 604800)
 [ -n "$week" ] && out+="${SEP}$(meter week "$week" "$week_r" "$week_p")"
 
-# Recommendation from burn rate (usage % / elapsed % of window). USAGE_METER_NO_ADVICE=1 hides.
+# Recommendation (shown right after the model so narrow terminals never cut it off)
+# from burn rate (usage % / elapsed % of window). USAGE_METER_NO_ADVICE=1 hides.
 if [ -z "$USAGE_METER_NO_ADVICE" ] && [ -n "$week_p" ]; then
   read -r lvl txt <<<"$(recommend "${five:-0}" "$week" "$five_p" "$week_p" "${five_r:-0}")"
   case $lvl in red) c=$RED;; yellow) c=$YELLOW;; green) c=$GREEN;; *) c=$DIM;; esac
-  [ -n "$txt" ] && out+="${SEP}${c}${txt}${R}"
+  [ -n "$txt" ] && rec="${SEP}${c}${txt}${R}"
 fi
 
 # Log usage samples for burnplan (only when a value changes). USAGE_METER_NO_LOG=1 disables.
@@ -113,4 +115,4 @@ if [ -z "$USAGE_METER_NO_LINK" ]; then
   out+="${SEP}"$'\e]8;;'"$url"$'\e\\'"${DIM}repo${R}"$'\e]8;;\e\\'
 fi
 
-printf '%s\n' "$out"
+printf '%s\n' "${head}${rec}${out}"

@@ -15,7 +15,7 @@ running `/usage`.
 | `ctx ███░░░░░ 34%` | How full the context window is |
 | `session ██░░░░░░ 24% (2h14m) 0.6x` | Usage of the 5-hour limit, time until it resets, and burn rate |
 | `week ██████░░ 78% (3d4h) 1.6x` | Usage of the 7-day limit, time until it resets, and burn rate |
-| `ease off (→156%)` | Recommendation with projected weekly % at reset (also `room to burn (→40%)`, `session cap in 29m`, `on pace`) |
+| `ease off →156%` | Recommendation, shown right after the model, with the weekly % you are on pace to reach at reset (also `burn more →40%`, `cap in 29m` for the session, `on pace`) |
 | `$1.23` | Estimated cost of this session |
 
 Each meter is green below 70%, yellow from 70%, and red from 90%. Anything
@@ -52,7 +52,7 @@ The `x` tag is burn rate: usage % divided by the % of the window already
 elapsed. `1.0x` is exactly on pace to hit 100% at reset; green is under, yellow
 over, red 1.25x or more. It is hidden for the first 10% of each window, where
 the ratio is noise. The recommendation uses the weekly rate (`ease off` at
-1.05x or more, `room to burn` under 0.7x) and warns if the current session
+1.05x or more, `burn more` under 0.7x) and warns if the current session
 will hit its cap within the hour. Set `USAGE_METER_NO_ADVICE=1` to hide it.
 
 ## burnplan
