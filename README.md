@@ -13,8 +13,8 @@ running `/usage`.
 | `Sonnet 5.5` | Current model |
 | `claude-usage-meter` | Name of the current folder |
 | `ctx ███░░░░░ 34%` | How full the context window is |
-| `session ██░░░░░░ 24% (2h14m) 0.6x` | Usage of the 5-hour limit, time until it resets, and burn rate |
-| `week ██████░░ 78% (3d4h) 1.6x` | Usage of the 7-day limit, time until it resets, and burn rate |
+| `session ██░░│░░░░░ 24% (2h14m) 0.6x` | Usage of the 5-hour limit, time until it resets, and burn rate |
+| `week █████│███░░ 78% (3d4h) 1.6x` | Usage of the 7-day limit, time until it resets, and burn rate |
 | `ease off →156%` | Recommendation, shown right after the model, with the weekly % you are on pace to reach at reset (also `burn more →40%`, `cap in 29m` for the session, `on pace`) |
 | `$1.23` | Estimated cost of this session |
 
@@ -47,6 +47,10 @@ Use `CLAUDE_DIR=/path make install` for a non-default config directory.
 Runs the script against sample input and prints the result.
 
 ## Burn rate
+
+The `│` tick on the session and week bars marks where you would be if usage were
+perfectly even across the window. Bar short of the tick: under pace. Bar past
+it: over pace. The bar fills in eighth-block steps so the gap is accurate.
 
 The `x` tag is burn rate: usage % divided by the % of the window already
 elapsed. `1.0x` is exactly on pace to hit 100% at reset; green is under, yellow

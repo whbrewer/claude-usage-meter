@@ -28,5 +28,5 @@ uninstall:
 	@echo "Uninstalled."
 
 test:
-	@echo '{"model":{"display_name":"Sonnet 5.5"},"cost":{"total_cost_usd":1.2345},"context_window":{"used_percentage":34},"rate_limits":{"five_hour":{"used_percentage":23.5},"seven_day":{"used_percentage":78.2}}}' | USAGE_METER_NO_LOG=1 bash src/statusline.sh
+	@now=$$(date +%s); echo "{\"model\":{\"display_name\":\"Sonnet 5.5\"},\"cost\":{\"total_cost_usd\":1.2345},\"context_window\":{\"used_percentage\":34},\"rate_limits\":{\"five_hour\":{\"used_percentage\":23.5,\"resets_at\":$$((now+9000))},\"seven_day\":{\"used_percentage\":78.2,\"resets_at\":$$((now+302400))}}}" | USAGE_METER_NO_LOG=1 bash src/statusline.sh
 	@python3 src/burnplan --week 45 --session 22 --session-reset 59m --week-reset 3.5h --x 12

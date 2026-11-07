@@ -24,6 +24,27 @@ bar() {  # percent -> 8-cell bar
   printf '%s' "$out"
 }
 
+pace_bar() {  # percent ideal_percent color -> 10-cell bar, eighth-block precision, "|" at the ideal position
+  awk -v p="$1" -v ideal="$2" -v c="$3" -v R="$R" -v B="$BOLD" 'BEGIN {
+    W = 10; if (p > 100) p = 100; if (p < 0) p = 0
+    fill = int(p * W * 8 / 100 + 0.5)
+    m = int(ideal * W / 100 + 0.5); if (m < 0) m = 0; if (m > W) m = W
+    split("▏ ▎ ▍ ▌ ▋ ▊ ▉", part, " ")
+    for (i = 0; i < W; i++) {
+      if (i == m) printf "%s%s│%s%s", R, B, R, c
+      e = fill - i * 8; if (e > 8) e = 8
+      if (e <= 0) printf "░"; else if (e >= 8) printf "█"; else printf "%s", part[e]
+    }
+    if (m == W) printf "%s%s│%s%s", R, B, R, c
+  }'
+}
+
+ideal_pct() {  # resets_at window_secs -> % of the window elapsed (where usage would be if perfectly even)
+  awk -v r="$1" -v w="$2" -v n="$(date +%s)" 'BEGIN {
+    e = w - (r - n); if (e < 0 || e > w) exit
+    printf "%.1f", e / w * 100 }'
+}
+
 until_reset() {  # epoch -> "2h14m" / "3d4h"
   local s=$(( $1 - $(date +%s) )) d h m
   [ "$s" -le 0 ] && return
@@ -45,9 +66,10 @@ pace_tag() {  # ratio -> colored "1.3x" (green: under pace, yellow: over, red: w
   printf '%s%.1fx%s' "$c" "$1" "$R"
 }
 
-meter() {  # label percent resets_at [pace]
+meter() {  # label percent resets_at [pace] [ideal_percent]
   local c; c=$(color_for "$2")
-  local out="${DIM}$1${R} ${c}$(bar "$2") $(printf '%.0f' "$2")%${R}"
+  local b; if [ -n "$5" ]; then b=$(pace_bar "$2" "$5" "$c"); else b=$(bar "$2"); fi
+  local out="${DIM}$1${R} ${c}${b} $(printf '%.0f' "$2")%${R}"
   if [ -n "$3" ]; then
     local t; t=$(until_reset "$3")
     [ -n "$t" ] && out+=" ${DIM}($t)${R}"
@@ -78,12 +100,14 @@ ctx=$(j .context_window.used_percentage)
 five=$(j .rate_limits.five_hour.used_percentage)
 five_r=$(j .rate_limits.five_hour.resets_at)
 five_p=""; [ -n "$five" ] && [ -n "$five_r" ] && five_p=$(pace "$five" "$five_r" 18000)
-[ -n "$five" ] && out+="${SEP}$(meter session "$five" "$five_r" "$five_p")"
+five_i=""; [ -n "$five_r" ] && five_i=$(ideal_pct "$five_r" 18000)
+[ -n "$five" ] && out+="${SEP}$(meter session "$five" "$five_r" "$five_p" "$five_i")"
 
 week=$(j .rate_limits.seven_day.used_percentage)
 week_r=$(j .rate_limits.seven_day.resets_at)
 week_p=""; [ -n "$week" ] && [ -n "$week_r" ] && week_p=$(pace "$week" "$week_r" 604800)
-[ -n "$week" ] && out+="${SEP}$(meter week "$week" "$week_r" "$week_p")"
+week_i=""; [ -n "$week_r" ] && week_i=$(ideal_pct "$week_r" 604800)
+[ -n "$week" ] && out+="${SEP}$(meter week "$week" "$week_r" "$week_p" "$week_i")"
 
 # Recommendation (shown right after the model so narrow terminals never cut it off)
 # from burn rate (usage % / elapsed % of window). USAGE_METER_NO_ADVICE=1 hides.
