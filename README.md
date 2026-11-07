@@ -70,7 +70,13 @@ still spend, and when do I need to start burning next week so none is left over?
     burnplan                              # plan from the latest logged usage
     burnplan --active 07:00-22:00 --save  # hours you are around (default 08:00-23:00)
     burnplan --job-rate 25 --save         # session %/h per /deep-research job
+    burnplan --chart                      # this week: even-burn line vs your usage
     burnplan --week 45 --session 22 --session-reset 59m --week-reset 3.5h --x 12
+
+`--chart` draws the week as a terminal chart: the `·` line is even burn, the
+shaded area is your logged usage (green under pace, yellow over, red well over),
+and `+` projects where you finish at your current average pace. It only covers
+the period since the status line started logging.
 
 It measures X (weekly % used by one full 5-hour session) from windows in the
 log where session usage rose by 10+ points; until then, pass `--x`. The burn

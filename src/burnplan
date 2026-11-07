@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 
 LOG = os.environ.get("USAGE_METER_LOG",
@@ -220,6 +221,73 @@ def print_blocks(blocks, ref, rate, job_rate, events=()):
         print(pace)
 
 
+
+# ---------------------------------------------------------------- chart
+
+def chart(samples, now, week_reset, week_now, height=12):
+    """Terminal chart of the current week: even-burn line vs actual usage,
+    plus a projection from now to reset at the current average pace."""
+    span = 7 * 86400
+    start = week_reset - span
+    cols = max(28, min(shutil.get_terminal_size((80, 24)).columns - 8, 84))
+    pts = sorted((s["t"], s["week"]) for s in samples
+                 if abs(s.get("week_reset", 0) - week_reset) < 3600 and s["t"] >= start)
+    if not pts or pts[-1][0] < now:
+        pts.append((now, week_now))  # carry the line up to now
+    first_t = pts[0][0]
+    frac = (now - start) / span
+    proj = week_now / frac if frac > 0.02 else None
+    row = lambda v: int(round(max(0.0, min(100.0, v)) / 100 * (height - 1)))
+
+    def actual(t):
+        if t < first_t or t > now:
+            return None
+        v = None
+        for pt, pv in pts:
+            if pt > t:
+                break
+            v = pv
+        return v
+
+    grid = []
+    for c in range(cols):
+        t = start + (c + 0.5) / cols * span
+        ideal = (t - start) / span * 100
+        a = actual(t)
+        col = [(" ", None)] * height
+        if a is not None:
+            clr = "32" if a <= ideal + 0.5 else "31" if a > ideal * 1.25 else "33"
+            for r in range(row(a) + 1):
+                col[r] = ("\u2592", clr)
+        if proj is not None and t > now:
+            v = week_now + (proj - week_now) * (t - now) / (week_reset - now)
+            col[row(v)] = ("+", "2")
+        col[row(ideal)] = ("\u00b7", "1")
+        grid.append(col)
+
+    fmt = lambda e: dt.datetime.fromtimestamp(e).strftime("%a %b %d %H:%M")
+    print(f"week usage, {fmt(start)} to {fmt(week_reset)}")
+    for r in range(height - 1, -1, -1):
+        label = {height - 1: "100%", (height - 1) // 2: " 50%", 0: "  0%"}.get(r, "    ")
+        print(label + " \u2502" + "".join(color(ch, code) if code else ch
+                                         for ch, code in (g[r] for g in grid)))
+    print("     \u2514" + "\u2500" * cols)
+    ticks = [" "] * (cols + 6)
+    for d in range(7):
+        pos = int(d / 7 * cols)
+        for i, chx in enumerate((dt.datetime.fromtimestamp(start + d * 86400)).strftime("%a")):
+            ticks[6 + pos + i] = chx
+    print("".join(ticks).rstrip())
+    nowc = min(cols - 1, int(frac * cols))
+    print(" " * (6 + nowc) + "^ now")
+    print()
+    ideal_now = frac * 100
+    print(f"  used {week_now:.0f}%  |  even pace would be {ideal_now:.0f}%"
+          + (f"  |  on pace to finish at {proj:.0f}%" if proj is not None else ""))
+    print(color("  \u2592 your usage   \u00b7 even-burn line   + projection at current pace", "2"))
+    if first_t > start + 3600:
+        print(color(f"  usage is logged since {when(first_t)}; earlier in the week is blank", "2"))
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -247,6 +315,7 @@ def main():
     p.add_argument("--buffer", type=float, default=1.0, help="hours of slack before the latest start (default 1)")
     p.add_argument("--save", action="store_true", help="save --x/--rate/--job-rate/--active as defaults")
     p.add_argument("--history", action="store_true", help="show the samples used for estimates")
+    p.add_argument("--chart", action="store_true", help="chart this week: even-burn line vs your usage")
     a = p.parse_args()
 
     if a.save:
@@ -269,6 +338,12 @@ def main():
     session_reset = parse_when(a.session_reset, now) if a.session_reset else last.get("five_reset")
     if a.session is None and session_reset and session_reset <= now:
         session = 0.0  # the logged window has already reset
+
+    if a.chart:
+        if week is None or week_reset is None or week_reset <= now:
+            sys.exit("no usable weekly sample yet; pass --week and --week-reset")
+        chart(samples, now, week_reset, week)
+        return
 
     missing = [n for n, v in (("--week", week), ("--session", session),
                               ("--week-reset", week_reset), ("--session-reset", session_reset))
