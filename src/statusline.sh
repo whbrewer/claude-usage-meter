@@ -56,13 +56,6 @@ meter() {  # label percent resets_at [pace]
   printf '%s' "$out"
 }
 
-abbrev() {  # "claude-usage-meter" -> "cum"; short names pass through
-  local n=$1
-  if [ "${#n}" -le 9 ]; then printf '%s' "$n"; return; fi
-  local ini; ini=$(awk -v n="$n" 'BEGIN { k = split(n, a, /[-_. ]+/); for (i = 1; i <= k; i++) printf "%s", substr(a[i], 1, 1) }')
-  if [ "${#ini}" -ge 2 ]; then printf '%s' "$ini"; else printf '%s…' "${n:0:8}"; fi
-}
-
 recommend() {  # session_used week_used session_pace week_pace session_resets_at -> "level text"
   awk -v su="$1" -v wu="$2" -v sp="$3" -v wp="$4" -v sr="$5" -v n="$(date +%s)" 'BEGIN {
     if (wp != "" && wp >= 1.05) { printf "red ease off, week on pace for %d%%", wp * 100; exit }
@@ -77,9 +70,6 @@ recommend() {  # session_used week_used session_pace week_pace session_resets_at
 }
 
 out="${BOLD}${CYAN}$(j .model.display_name)${R}"
-
-dir=$(j .workspace.current_dir)
-[ -n "$dir" ] && out+="${SEP}${DIM}$(abbrev "${dir##*/}")${R}"
 
 ctx=$(j .context_window.used_percentage)
 [ -n "$ctx" ] && out+="${SEP}$(meter ctx "$ctx")"

@@ -16,7 +16,6 @@ running `/usage`.
 | `5h ██░░░░░░ 24% (2h14m) 0.6x` | Usage of the 5-hour limit, time until it resets, and burn rate |
 | `7d ██████░░ 78% (3d4h) 1.6x` | Usage of the 7-day limit, time until it resets, and burn rate |
 | `ease off, week on pace for 156%` | Recommendation (also `room to burn`, `5h cap in 29m`, `on pace`) |
-| `cum` | Project directory, abbreviated to initials when long (`claude-usage-meter`) |
 | `$1.23` | Estimated cost of this session |
 
 Each meter is green below 70%, yellow from 70%, and red from 90%. Anything
