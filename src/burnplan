@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""burnplan: plan how to spend the rest of your weekly Claude usage.
+
+The 5-hour session limit caps how fast you can burn, so the weekly budget has
+to be spread over enough session windows. burnplan reads the samples that the
+usage-meter status line logs, measures X (weekly % consumed by one full
+session) from your history, and simulates the rest of the week.
+
+Every input can be overridden on the command line; see --help.
+"""
+import argparse
+import datetime as dt
+import json
+import math
+import os
+import re
+import sys
+
+LOG = os.environ.get("USAGE_METER_LOG",
+                     os.path.expanduser("~/.claude/usage-meter/samples.jsonl"))
+CONFIG = os.path.expanduser("~/.config/burnplan.json")
+WINDOW = 5 * 3600
+DEFAULT_ACTIVE = "08:00-23:00"
+DEFAULT_RATE = 40.0  # session %/hour when burning hard, if history has nothing better
+
+
+# ---------------------------------------------------------------- parsing
+
+def parse_when(s, now):
+    """'59m', '3.5h', '1h30m', '2d4h', '16:30', 'fri 17:00', or epoch -> epoch."""
+    s = s.strip().lower()
+    if re.fullmatch(r"\d{9,}", s):
+        return int(s)
+    m = re.fullmatch(r"(?:(\d+(?:\.\d+)?)d)?(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?", s)
+    if m and any(m.groups()):
+        d, h, mi = (float(g or 0) for g in m.groups())
+        return int(now + d * 86400 + h * 3600 + mi * 60)
+    days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    m = re.fullmatch(r"(?:([a-z]{3})[a-z]*\s+)?(\d{1,2}):(\d{2})", s)
+    if m:
+        base = dt.datetime.fromtimestamp(now)
+        t = base.replace(hour=int(m.group(2)), minute=int(m.group(3)), second=0, microsecond=0)
+        if m.group(1):
+            if m.group(1) not in days:
+                raise ValueError(f"unknown weekday in {s!r}")
+            t += dt.timedelta(days=(days.index(m.group(1)) - t.weekday()) % 7)
+        if t.timestamp() <= now:
+            t += dt.timedelta(days=7 if m.group(1) else 1)
+        return int(t.timestamp())
+    raise ValueError(f"cannot parse time {s!r}")
+
+
+def parse_active(s):
+    """'08:00-23:00' -> (start_min, end_min); None means always active."""
+    if not s or s == "always":
+        return None
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})", s)
+    if not m:
+        raise ValueError(f"--active must look like 08:00-23:00, got {s!r}")
+    a = int(m.group(1)) * 60 + int(m.group(2))
+    b = int(m.group(3)) * 60 + int(m.group(4))
+    return (a, b)
+
+
+def is_active(epoch, active):
+    if active is None:
+        return True
+    t = dt.datetime.fromtimestamp(epoch)
+    mins = t.hour * 60 + t.minute
+    a, b = active
+    return a <= mins < b if a < b else (mins >= a or mins < b)
+
+
+# ---------------------------------------------------------------- formatting
+
+def dur(sec):
+    sec = max(0, int(sec))
+    d, h, m = sec // 86400, sec % 86400 // 3600, sec % 3600 // 60
+    if d:
+        return f"{d}d{h}h"
+    if h:
+        return f"{h}h{m:02d}m"
+    return f"{m}m"
+
+
+def when(epoch):
+    return dt.datetime.fromtimestamp(epoch).strftime("%a %H:%M")
+
+
+def color(s, code):
+    return f"\033[{code}m{s}\033[0m" if sys.stdout.isatty() else s
+
+
+# ---------------------------------------------------------------- history
+
+def load_samples():
+    out = []
+    try:
+        with open(LOG) as f:
+            for line in f:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def estimate_x(samples, min_session_delta=10):
+    """Weekly % per full session, from windows where session rose enough to beat
+    integer rounding. Pools all windows: X = sum(dweek) / sum(dsession) * 100."""
+    windows = {}
+    for s in samples:
+        key = (s.get("five_reset"), s.get("week_reset"))  # same 5h window, same week
+        if None in key:
+            continue
+        windows.setdefault(key, []).append(s)
+    dw = ds = 0.0
+    used = 0
+    for pts in windows.values():
+        pts.sort(key=lambda p: p["t"])
+        d_s = pts[-1]["five"] - pts[0]["five"]
+        d_w = pts[-1]["week"] - pts[0]["week"]
+        if d_s >= min_session_delta and d_w >= 0:
+            dw += d_w
+            ds += d_s
+            used += 1
+    if ds == 0:
+        return None, 0
+    return dw / ds * 100, used
+
+
+def estimate_rate(samples, min_span=1800):
+    """Fastest sustained session burn seen (session %/hour over >=30 min)."""
+    best = None
+    by_win = {}
+    for s in samples:
+        by_win.setdefault(s.get("five_reset"), []).append(s)
+    for pts in by_win.values():
+        pts.sort(key=lambda p: p["t"])
+        j = 0
+        for i in range(len(pts)):
+            while j < len(pts) and pts[j]["t"] - pts[i]["t"] < min_span:
+                j += 1
+            if j < len(pts):
+                r = (pts[j]["five"] - pts[i]["five"]) / ((pts[j]["t"] - pts[i]["t"]) / 3600)
+                if best is None or r > best:
+                    best = r
+    return best
+
+
+# ---------------------------------------------------------------- simulation
+
+def simulate(now, start, week_reset, session, session_reset, x, rate, active, need, week0=0.0):
+    """Burn at `rate` session-%/h whenever active and t >= start. A new 5h window
+    opens on the first burning minute after the previous one ends.
+    Returns (weekly % burned before week_reset, list of burn blocks)."""
+    step = 60
+    burned = 0.0
+    win_end, sess = (session_reset, session) if session_reset > now else (None, 0.0)
+    blocks, cur = [], None
+    t = now
+    while t < week_reset and burned < need - 1e-9:
+        if win_end is not None and t >= win_end:
+            win_end, cur = None, None
+        if t >= start and is_active(t, active):
+            if win_end is None:
+                win_end, sess, cur = t + WINDOW, 0.0, None
+            d = min(rate * step / 3600, 100 - sess, (need - burned) * 100 / x)
+            if d > 0:
+                if cur is None or cur["end"] != t:
+                    cur = {"start": t, "s0": sess, "win_end": win_end}
+                    blocks.append(cur)
+                sess += d
+                burned += d * x / 100
+                cur.update(end=t + step, s1=sess, week=week0 + burned)
+        t += step
+    return min(burned, need), blocks
+
+
+def latest_start(now, week_reset, session, session_reset, x, rate, active, need):
+    """Latest time you can start burning full-throttle and still use `need` %."""
+    ok = lambda st: simulate(now, st, week_reset, session, session_reset,
+                             x, rate, active, need)[0] >= need - 0.05
+    if not ok(now):
+        return None
+    lo, hi = now, week_reset
+    while hi - lo > 300:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if ok(mid) else (lo, mid)
+    return lo
+
+
+def hm(epoch, ref):
+    """Clock time, with weekday if not the same day as ref."""
+    a, b = dt.datetime.fromtimestamp(epoch), dt.datetime.fromtimestamp(ref)
+    return a.strftime("%H:%M") if a.date() == b.date() else a.strftime("%a %H:%M")
+
+
+def print_blocks(blocks, ref, rate, job_rate, events=()):
+    """Print a burn schedule; events are (epoch, text) rows merged in by time."""
+    rows = []
+    for b in blocks:
+        span = f"{hm(b['start'], ref)}-{dt.datetime.fromtimestamp(b['end']):%H:%M}"
+        what = f"burn session {b['s0']:.0f}% -> {b['s1']:.0f}%"
+        rows.append((b["start"], 1, span, f"{what:<28} week -> {b['week']:.0f}%"))
+    for t, text in events:
+        rows.append((t, 0, hm(t, ref), text))
+    rows.sort(key=lambda r: r[:2])
+    width = max((len(r[2]) for r in rows), default=0)
+    for _, _, span, text in rows:
+        print(f"  {span:<{width}}  {text}")
+    if blocks:
+        pace = f"  while burning: session should climb ~{rate / 4:.0f} pts every 15 min"
+        if job_rate:
+            pace += f" (~{math.ceil(rate / job_rate)} parallel /deep-research jobs)"
+        else:
+            pace += "; if it is slower, start another job"
+        print(pace)
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    cfg = {}
+    try:
+        with open(CONFIG) as f:
+            cfg = json.load(f)
+    except (FileNotFoundError, ValueError):
+        pass
+
+    p = argparse.ArgumentParser(
+        description="Plan how to spend the rest of your weekly Claude usage.",
+        epilog="Times accept 59m, 3.5h, 1h30m, 2d4h, 16:30, 'fri 17:00'. "
+               "Without overrides, current usage comes from the status-line log at "
+               f"{LOG}.")
+    p.add_argument("--week", type=float, help="weekly usage %% now")
+    p.add_argument("--session", type=float, help="session usage %% now")
+    p.add_argument("--week-reset", help="when the weekly limit resets")
+    p.add_argument("--session-reset", help="when the current session resets")
+    p.add_argument("--x", type=float, help="weekly %% used by one full session (default: measured)")
+    p.add_argument("--rate", type=float, help="session %%/hour you can burn when going hard")
+    p.add_argument("--job-rate", type=float,
+                   help="session %%/hour one /deep-research job burns (to suggest parallel jobs)")
+    p.add_argument("--active", help=f"hours you are around to burn, or 'always' (default {DEFAULT_ACTIVE})")
+    p.add_argument("--buffer", type=float, default=1.0, help="hours of slack before the latest start (default 1)")
+    p.add_argument("--save", action="store_true", help="save --x/--rate/--job-rate/--active as defaults")
+    p.add_argument("--history", action="store_true", help="show the samples used for estimates")
+    a = p.parse_args()
+
+    if a.save:
+        for k in ("x", "rate", "job_rate", "active"):
+            v = getattr(a, k)
+            if v is not None:
+                cfg[k] = v
+        os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+        with open(CONFIG, "w") as f:
+            json.dump(cfg, f, indent=2)
+        print(f"saved defaults to {CONFIG}: {cfg}")
+
+    now = int(dt.datetime.now().timestamp())
+    samples = load_samples()
+    last = samples[-1] if samples else {}
+
+    week = a.week if a.week is not None else last.get("week")
+    session = a.session if a.session is not None else last.get("five")
+    week_reset = parse_when(a.week_reset, now) if a.week_reset else last.get("week_reset")
+    session_reset = parse_when(a.session_reset, now) if a.session_reset else last.get("five_reset")
+    if a.session is None and session_reset and session_reset <= now:
+        session = 0.0  # the logged window has already reset
+
+    missing = [n for n, v in (("--week", week), ("--session", session),
+                              ("--week-reset", week_reset), ("--session-reset", session_reset))
+               if v is None]
+    if missing:
+        sys.exit("no usage samples logged yet; pass " + " ".join(missing) +
+                 " (or reinstall the status line with `make install` and send a message)")
+    if week_reset <= now:
+        sys.exit("week reset time is in the past; pass --week-reset")
+
+    x_meas, x_n = estimate_x(samples)
+    if a.x is not None:
+        x, x_src = a.x, "from --x"
+    elif x_meas:
+        x, x_src = x_meas, f"measured over {x_n} session window(s)"
+    elif "x" in cfg:
+        x, x_src = cfg["x"], "saved default"
+    else:
+        x, x_src = None, None
+
+    rate_meas = estimate_rate(samples)
+    if a.rate is not None:
+        rate, rate_src = a.rate, "from --rate"
+    elif "rate" in cfg:
+        rate, rate_src = cfg["rate"], "saved default"
+    elif rate_meas and rate_meas > 5:
+        rate, rate_src = rate_meas, "fastest burn seen in history"
+    else:
+        rate, rate_src = DEFAULT_RATE, "default guess; set with --rate"
+    job_rate = a.job_rate if a.job_rate is not None else cfg.get("job_rate")
+    active_s = a.active or cfg.get("active") or DEFAULT_ACTIVE
+    active = parse_active(active_s)
+
+    remaining = max(0.0, 100 - week)
+    sess_left = session_reset - now if session_reset > now else 0
+    B = lambda s: color(s, "1")
+
+    if a.history:
+        print(f"{len(samples)} samples in {LOG}")
+        for s in samples[-15:]:
+            print(f"  {when(s['t'])}  session {s['five']:>5.1f}%  week {s['week']:>5.1f}%")
+        print()
+
+    print(f"week {week:.0f}% (resets {when(week_reset)}, in {dur(week_reset - now)})  |  "
+          f"session {session:.0f}%"
+          + (f" (resets {hm(session_reset, now)}, in {dur(sess_left)})" if sess_left else " (no open window)"))
+    print()
+
+    if x is None:
+        print(B("> First, measure how much a session costs you."))
+        print("  Work as usual (or burn hard) until session rises 10+ points, then run burnplan again.")
+        print("  Or pass --x if you already know it. Meanwhile, by guess of X:")
+        for xv in (8, 10, 12, 15, 20):
+            print(f"    X={xv:<3} emptying this session leaves "
+                  f"{max(0, remaining - (100 - session) * xv / 100):.0f}% of the week")
+        return
+
+    buffer = a.buffer * 3600
+    burned, blocks = simulate(now, now, week_reset, session, session_reset, x, rate, active, remaining, week)
+    stranded = remaining - burned
+    nxt = week_reset + 7 * 86400
+    st_next = latest_start(week_reset, nxt, 0, 0, x, rate, active, remaining)
+    nxt_txt = (f"start next week's burn by {B(when(st_next - buffer))}" if st_next
+               else "next week, start burning early in the week")
+
+    def events_for(bl):
+        ev = [(week_reset, "week resets")]
+        if sess_left and any(b["start"] < session_reset for b in bl) \
+                and any(b["start"] >= session_reset for b in bl):
+            ev.append((session_reset, "session resets: send a message right away to open a new window"))
+        return ev
+
+    if stranded > 0.5:
+        print(B(f"> ~{stranded:.0f}% of your week will go unused; it is too late to spend it all."))
+        print(f"  Burn hard until {hm(week_reset, now)} to save what you can, and {nxt_txt}.")
+        print()
+        print(B("RIGHT NOW"))
+        if sess_left:
+            need = (100 - session) / (sess_left / 3600)
+            if need > rate:
+                tip = f"~{math.ceil(need / job_rate)} parallel jobs" if job_rate else "as many parallel jobs as you can"
+                print(f"  to use all {100 - session:.0f}% left in this session, session must climb"
+                      f" ~{need / 4:.0f} pts every 15 min: run {tip}.")
+                print(f"  The schedule below assumes your usual pace, so anything faster is a bonus.")
+        print_blocks(blocks, now, rate, job_rate, events_for(blocks))
+    else:
+        start = latest_start(now, week_reset, session, session_reset, x, rate, active, remaining)
+        go = max(now, start - buffer)
+        if go <= now + 300:
+            print(B("> Start burning now: there is no slack left."))
+        else:
+            print(B(f"> On track. Nothing to do until {when(go)} (in {dur(go - now)}), then burn hard."))
+            print(f"  Latest possible start is {when(start)}; the {a.buffer:g}h buffer covers gaps.")
+        print()
+        print(B("SCHEDULE"))
+        _, blocks = simulate(now, go, week_reset, session, session_reset, x, rate, active, remaining, week)
+        print_blocks(blocks, now, rate, job_rate, events_for(blocks))
+        print()
+        print(color(f"assumes: one full session = {x:.1f}% of week ({x_src}); "
+                    f"burn rate {rate:.0f} session-%/h ({rate_src}); "
+                    f"active {active_s} (set with --active, or 'always')", "2"))
+        return
+
+    print()
+    print(B(f"NEXT WEEK") + f"  (to spend the same {remaining:.0f}% before {when(nxt)}: "
+          f"{remaining / x:.1f} sessions, ~{remaining / rate * 100 / x:.0f}h of hard burning)")
+    if st_next is None:
+        print(color("  not possible at this burn rate; run more jobs in parallel (raise --rate)", "31"))
+    else:
+        go = st_next - buffer
+        _, nb = simulate(week_reset, go, nxt, 0, 0, x, rate, active, remaining, 100 - remaining)
+        print_blocks(nb, 0, rate, job_rate)
+        print(f"  checkpoint: at {when(go)} you should be at about {100 - remaining:.0f}% of week;"
+              " if lower, start earlier")
+
+    print()
+    print(color(f"assumes: one full session = {x:.1f}% of week ({x_src}); "
+                f"burn rate {rate:.0f} session-%/h ({rate_src}); "
+                f"active {active_s} (set with --active, or 'always')", "2"))
+
+if __name__ == "__main__":
+    main()
